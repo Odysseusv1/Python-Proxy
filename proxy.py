@@ -1,17 +1,19 @@
 import requests
-from flask import Flask, request, jsonify
-app =  Flask(__name__)
+from flask import Flask, request, Response
+
+app = Flask(__name__)
 
 @app.route('/proxy', methods=['GET'])
-
 def proxy():
-    url = request.args.get('url')
-    if not url:
-        return jsonify({'error': 'Missing url parameter'})
+    target_url = request.args.get('url')
+    if not target_url:
+        return Response("URL parameter is required", status=400)
+
     try:
-        response = requests.get(url)
-        return (response.content, response.status_code, response.headers.items())
+        response = requests.get(target_url, proxies={"http": "http://your_proxy:port", "https": "http://your_proxy:port"})
+        return Response(response.content, status=response.status_code, headers=dict(response.headers))
     except requests.exceptions.RequestException as e:
-        return jsonify({'error': str(e)}), 500
+        return Response(f"An error occurred: {str(e)}", status=500)
+
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(host='0.0.0.0', port=5000)
