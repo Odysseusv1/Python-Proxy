@@ -1,38 +1,100 @@
+import re
+from urllib.parse import urlparse, urlunparse
+from flask import Flask, render_template, request, abort, Response, redirect
 import requests
-from flask import Flask, request, Response, send_from_directory
+import logging
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+LOG = logging.getLogger("app.py")
 
-@app.route('/')
+# Approved hosts for proxying
+APPROVED_HOSTS = {"google.com", "www.google.com", "yahoo.com"}
+
+@app.route('/', methods=["GET"])
 def index():
-    return send_from_directory('', 'index.html')
+    # Render the index.html template
+    return render_template('index.html')
 
-@app.route('/proxy', methods=['GET'])
-def proxy():
-    target_url = request.args.get('url')
-    if not target_url:
-        return Response("URL parameter is required", status=400)
+@app.route('/<path:url>', methods=["GET", "POST"])
+def root(url):
+    # Handles requests to the root path and redirects to the proxy path
+    referer = request.headers.get('referer')
+    if not referer:
+        return Response("Relative URL sent without a proxying request referral. Please specify a valid proxy host (/p/url)", 400)
 
-    # Ensure the URL starts with http:// or https://
-    if not target_url.startswith(('http://', 'https://')):
-        return Response("Invalid URL. Please include http:// or https://", status=400)
+    proxy_ref = get_proxied_request_info(referer)
+    host = proxy_ref[0]
+    redirect_url = f"/p/{host}/{url}"
+    if request.query_string:
+        redirect_url += f"?{request.query_string.decode('utf-8')}"
 
-    try:
-        # Set headers to mimic a browser request
-        headers = {
-            'User -Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        }
-        
-        # Make the request to the target URL
-        response = requests.get(target_url, headers=headers)
-        response.raise_for_status()  # Raises an error for bad responses
+    LOG.debug("Redirecting relative path to one under proxy: %s", redirect_url)
+    return redirect(redirect_url)
 
-        return Response(response.content, status=response.status_code, headers=dict(response.headers))
-    except requests.exceptions.HTTPError as http_err:
-        return Response(f"HTTP error occurred: {http_err}", status=response.status_code)
-    except requests.exceptions.RequestException as req_err:
-        return Response(f"Request error occurred: {req_err}", status=500)
+@app.route('/p/<path:url>', methods=["GET", "POST"])
+def proxy(url):
+    # Fetches the specified URL and streams it to the client
+    url_parts = urlparse(f'{request.scheme}://{url}')
+    
+    # Redirect if the URL has no path
+    if not url_parts.path:
+        parts = urlparse(request.url)
+        LOG.warning("Proxy request without a path was sent, redirecting to '/': %s -> %s/", url, url)
+        return redirect(urlunparse(parts._replace(path=parts.path + '/')))
+
+    LOG.debug("%s %s with headers: %s", request.method, url, request.headers)
+    response = make_request(url, request.method, dict(request.headers), request.form)
+    LOG.debug("Got %s response from %s", response.status_code, url)
+
+    # Stream the response back to the client
+    return stream_response(response)
+
+def make_request(url, method, headers=None, data=None):
+    # Makes a request to the specified URL and returns the response
+    headers = headers or {}
+    url = f'http://{url}'
+
+    # Ensure the URL is approved
+    if not is_approved(url):
+        LOG.warning("URL is not approved: %s", url)
+        abort(403)
+
+    # Pass original Referer for subsequent resource requests
+    referer = request.headers.get('referer')
+    if referer:
+        proxy_ref = get_proxied_request_info(referer)
+        headers["referer"] = f"http://{proxy_ref[0]}/{proxy_ref[1]}"
+
+    LOG.debug("Sending %s %s with headers: %s and data: %s", method, url, headers, data)
+    return requests.request(method, url, params=request.args, stream=True, headers=headers, allow_redirects=False, data=data)
+
+def is_approved(url):
+    # Checks if the given URL is allowed to be fetched
+    parts = urlparse(url)
+    return parts.netloc in APPROVED_HOSTS
+
+def get_proxied_request_info(proxy_url):
+    # Extracts information about the target proxied URL from the proxy request
+    parts = urlparse(proxy_url)
+    if not parts.path or not parts.path.startswith('/p/'):
+        return None
+
+    matches = re.match(r'^/p/([^/]+)/?(.*)', parts.path)
+    proxied_host = matches.group(1)
+    proxied_path = matches.group(2) or '/'
+    LOG.debug("Referred by proxy host, uri: %s, %s", proxied_host, proxied_path)
+    return proxied_host, proxied_path
+
+def stream_response(response):
+    # Streams the response content back to the client
+    headers = dict(response.raw.headers)
+    def generate():
+        for chunk in response.raw.stream(decode_content=False):
+            yield chunk
+    out = Response(generate(), headers=headers)
+    out.status_code = response.status_code
+    return out
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
