@@ -1,6 +1,6 @@
 import re
 from urllib.parse import urlparse, urlunparse
-from flask import Flask, render_template, request, abort, Response, redirect
+from flask import Flask, request, abort, Response, redirect
 import requests
 import logging
 
@@ -13,8 +13,33 @@ APPROVED_HOSTS = {"google.com", "www.google.com", "yahoo.com"}
 
 @app.route('/', methods=["GET"])
 def index():
-    # Render the index.html template
-    return render_template('index.html')
+    # Return a simple HTML form for URL input
+    return '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>URL Proxy</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/4.5.2/css/bootstrap.min.css">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1 class="text-center">URL Proxy Service</h1>
+            <form action="/<path:url>" method="POST" class="mt-4">
+                <div class="form-group">
+                    <label for="url">Enter URL to Proxy:</label>
+                    <input type="text" class="form-control" id="url" name="url" placeholder="e.g., google.com/search?q=example" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">Proxy URL</button>
+            </form>
+        </div>
+        <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.2/dist/umd/popper.min.js"></script>
+        <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    </body>
+    </html>
+    '''
 
 @app.route('/<path:url>', methods=["GET", "POST"])
 def root(url):
